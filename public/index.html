@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>User System</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <h1>Авторизация</h1>
+
+  <div id="register">
+    <h2>Регистрация</h2>
+    <input id="r_nick" placeholder="Ник"><br>
+    <input id="r_name" placeholder="Имя"><br>
+    <input id="r_last" placeholder="Фамилия"><br>
+    <input id="r_pass" type="password" placeholder="Пароль"><br>
+    <button onclick="register()">Создать</button>
+  </div>
+
+  <div id="login">
+    <h2>Вход</h2>
+    <input id="l_nick" placeholder="Ник"><br>
+    <input id="l_pass" type="password" placeholder="Пароль"><br>
+    <button onclick="login()">Войти</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

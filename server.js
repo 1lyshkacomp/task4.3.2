@@ -1,124 +1,127 @@
-require("dotenv").config();
-const express = require("express");
-const mongoose = require("mongoose");
-const cors = require("cors");
-const jwt = require("jsonwebtoken");
-const path = require("path");
-
-const User = require("./models/User");
+require('dotenv').config();
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const helmet = require('helmet');
+const jwt = require('jsonwebtoken');
+const User = require('./models/User');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-const JWT_SECRET = process.env.JWT_SECRET || "secret123";
+const PORT = 3000; // Стандарт для CodeSandbox
+const JWT_SECRET = process.env.JWT_SECRET || 'secretKey123';
 
 app.use(express.json());
 app.use(cors());
+app.use(helmet());
+app.use(express.static('public')); // Раздаем фронтенд
 
-// serve frontend
-app.use(express.static("public"));
+// Подключение к БД
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('✅ MongoDB Connected!'))
+  .catch(err => console.error('❌ DB Error:', err.message));
 
-// connect Mongo
-mongoose
-  .connect(process.env.MONGO_URL)
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.log(err));
+// --- Middleware: Проверка Токена ---
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // "Bearer <token>"
 
-// AUTH middleware
-function auth(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ error: "No token" });
+  if (!token) return res.status(401).json({ error: 'Token required' });
 
-  const token = header.split(" ")[1];
-  if (!token) return res.status(401).json({ error: "Invalid token" });
-
-  jwt.verify(token, JWT_SECRET, (err, payload) => {
-    if (err) return res.status(403).json({ error: "Invalid token" });
-    req.user = payload;
+  jwt.verify(token, JWT_SECRET, (err, userPayload) => {
+    if (err) return res.status(403).json({ error: 'Invalid token' });
+    req.user = userPayload; // { userId, role }
     next();
   });
-}
+};
 
-// REGISTER
-app.post("/api/register", async (req, res) => {
-  const { nickname, firstName, lastName, password } = req.body;
+// --- РОУТЫ ---
+
+// 1. Регистрация
+app.post('/api/register', async (req, res) => {
   try {
+    const { nickname, firstName, lastName, password } = req.body;
     const user = new User({ nickname, firstName, lastName });
     user.setPassword(password);
     await user.save();
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(201).json({ message: 'User created' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
-// LOGIN (return JWT)
-app.post("/api/login", async (req, res) => {
+// 2. Логин (Выдача JWT)
+app.post('/api/login', async (req, res) => {
   const { nickname, password } = req.body;
-
-  const user = await User.findOne({ nickname, deletedAt: null }).select(
-    "+passwordHash +salt +role"
-  );
+  
+  // Ищем пользователя (включая удаленных? Нет, только активных)
+  const user = await User.findOne({ nickname, deletedAt: null }).select('+passwordHash +salt +iterations +role');
 
   if (!user || !user.checkPassword(password)) {
-    return res.status(401).json({ error: "Invalid credentials" });
+    return res.status(401).json({ error: 'Invalid credentials' });
   }
 
+  // Создаем токен (живет 24 часа)
   const token = jwt.sign(
-    { userId: user._id, role: user.role },
-    JWT_SECRET,
-    { expiresIn: "24h" }
+    { userId: user._id, role: user.role }, 
+    JWT_SECRET, 
+    { expiresIn: '24h' }
   );
 
-  res.json({ token });
+  res.json({ token, role: user.role });
 });
 
-// GET ME
-app.get("/api/me", auth, async (req, res) => {
+// 3. Получить профиль (Защищено JWT + Last-Modified)
+app.get('/api/me', authenticateToken, async (req, res) => {
   const user = await User.findById(req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  // Добавляем заголовок Last-Modified
+  res.setHeader('Last-Modified', new Date(user.updated_at).toUTCString());
+  
   res.json({
-    id: user._id,
-    nickname: user.nickname,
-    firstName: user.firstName,
-    lastName: user.lastName,
+      nickname: user.nickname,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role
   });
 });
 
-// UPDATE PROFILE
-app.put("/api/update", auth, async (req, res) => {
-  const { firstName, lastName } = req.body;
+// 4. Обновить профиль (Защищено + If-Unmodified-Since)
+app.put('/api/update', authenticateToken, async (req, res) => {
+    const user = await User.findById(req.user.userId);
+    
+    // Проверка заголовка If-Unmodified-Since
+    const clientHeader = req.headers['if-unmodified-since'];
+    if (clientHeader) {
+        const clientTime = new Date(clientHeader).getTime();
+        const serverTime = new Date(user.updated_at).getTime();
+        
+        // Если данные на сервере новее (с допуском 1 сек), то ошибка 412
+        if (serverTime > clientTime + 1000) {
+            return res.status(412).json({ error: 'Precondition Failed: Data outdated' });
+        }
+    }
 
-  await User.findByIdAndUpdate(req.user.userId, {
-    firstName,
-    lastName,
-  });
-
-  res.json({ ok: true });
+    if (req.body.firstName) user.firstName = req.body.firstName;
+    if (req.body.lastName) user.lastName = req.body.lastName;
+    
+    await user.save();
+    res.setHeader('Last-Modified', new Date(user.updated_at).toUTCString());
+    res.json({ message: 'Updated' });
 });
 
-// CHANGE PASSWORD
-app.put("/api/change-password", auth, async (req, res) => {
-  const { oldPassword, newPassword } = req.body;
+// 5. Удаление (Soft Delete + Admin Check)
+app.delete('/api/users/:id', authenticateToken, async (req, res) => {
+    const targetId = req.params.id;
+    const requester = req.user;
 
-  const user = await User.findById(req.user.userId).select(
-    "+passwordHash +salt"
-  );
+    // Админ может удалить любого, Юзер только себя
+    if (requester.role !== 'admin' && requester.userId !== targetId) {
+        return res.status(403).json({ error: 'Access denied' });
+    }
 
-  if (!user.checkPassword(oldPassword))
-    return res.status(400).json({ error: "Wrong old password" });
-
-  user.setPassword(newPassword);
-  await user.save();
-
-  res.json({ ok: true });
+    await User.findByIdAndUpdate(targetId, { deletedAt: new Date() });
+    res.json({ message: 'User soft-deleted' });
 });
 
-// SOFT DELETE
-app.delete("/api/delete", auth, async (req, res) => {
-  await User.findByIdAndUpdate(req.user.userId, {
-    deletedAt: new Date(),
-  });
-  res.json({ ok: true });
-});
-
-app.listen(PORT, () => console.log("Server running on", PORT));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

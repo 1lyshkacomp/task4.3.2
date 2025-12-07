@@ -94,7 +94,9 @@ app.put("/api/update", authenticateToken, async (req, res) => {
 
   // Поскольку нет полей, которые нужно обновить, мы просто "сохраняем"
   // чтобы обновить updated_at для следующего 412 теста.
+  user.updated_at = new Date(); // Принудительно обновляем дату
   await user.save(); 
+  
   res.setHeader("Last-Modified", new Date(user.updated_at).toUTCString());
   res.json({ message: "Updated" });
 });
